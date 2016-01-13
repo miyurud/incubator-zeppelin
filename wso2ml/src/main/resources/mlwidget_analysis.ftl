@@ -24,10 +24,11 @@
     </script>
     <table>
         <tbody>
-        <tr><td>Data set : </td>
+        <tr><td><h4>Analysis</h4></td></tr>
+        <tr><td>Project : </td>
             <td>
                 <select>
-                <#list datasets as ds>
+                <#list projects as ds>
                     <option value="${ds}">${ds}</option>
                 </#list>
                 </select>

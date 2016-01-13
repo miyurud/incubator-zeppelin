@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-package org.apache.zeppelin.wso2;
+package org.apache.zeppelin.wso2.ml.predict;
 
 import com.google.common.base.Joiner;
 import com.google.gson.Gson;
@@ -43,6 +43,9 @@ import org.apache.zeppelin.spark.SparkVersion;
 import org.apache.zeppelin.spark.ZeppelinContext;
 import org.apache.zeppelin.spark.dep.DependencyContext;
 import org.apache.zeppelin.spark.dep.DependencyResolver;
+import org.apache.zeppelin.wso2.ml.JerseyClient;
+import org.apache.zeppelin.wso2.ml.WSO2MLInterface;
+import org.apache.zeppelin.wso2.ml.project.WSO2MLInterpreterProject;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.wso2.carbon.ml.commons.domain.MLDataset;
@@ -68,8 +71,8 @@ import java.util.*;
  * @author anthonycorbacho
  *
  */
-public class WSO2MLInterpreter extends Interpreter {
-  private Logger logger = LoggerFactory.getLogger(WSO2MLInterpreter.class);
+public class WSO2MLInterpreterPrediction extends Interpreter {
+  private Logger logger = LoggerFactory.getLogger(WSO2MLInterpreterPrediction.class);
   private int commandTimeOut = 600000;
   private String ML_SERVER_HOST = "localhost";
   private InterpreterContext ctx;
@@ -87,10 +90,10 @@ public class WSO2MLInterpreter extends Interpreter {
   private Map<String, Object> binder;
 
   static {
-    Interpreter.register("wso2ml", "spark", WSO2MLInterpreter.class.getName());
+    Interpreter.register("predict", "wso2ml", WSO2MLInterpreterPrediction.class.getName());
   }
 
-  public WSO2MLInterpreter(Properties property) {
+  public WSO2MLInterpreterPrediction(Properties property) {
     super(property);
     out = new ByteArrayOutputStream();
   }
@@ -98,6 +101,27 @@ public class WSO2MLInterpreter extends Interpreter {
   @Override
   public void close() {}
 
+  public void getMainSparkContext(){
+    InterpreterGroup intpGroup = getInterpreterGroup();
+    synchronized (intpGroup) {
+      for (Interpreter intp : getInterpreterGroup()){
+        LazyOpenInterpreter lazy = null;
+        if (intp.getClassName().equals(WSO2MLInterpreterProject.class.getName())) {
+          Interpreter p = intp;
+          while (p instanceof WrappedInterpreter) {
+            if (p instanceof LazyOpenInterpreter) {
+              lazy = (LazyOpenInterpreter) p;
+            }
+            p = ((WrappedInterpreter) p).getInnerInterpreter();
+          }
+          sc = ((WSO2MLInterpreterProject) p).getSparkContext();
+        }
+
+      }
+    }
+
+    System.err.println("+=+>" + sc.version());
+  }
 
   @Override
   public InterpreterResult interpret(String cmd, InterpreterContext contextInterpreter) {
@@ -108,7 +132,7 @@ public class WSO2MLInterpreter extends Interpreter {
 
     try {
     ClassLoader classLoader = getClass().getClassLoader();
-    URL dataFile = classLoader.getResource("mlwidget.ftl");
+    URL dataFile = classLoader.getResource("mlwidget_predict.ftl");
     InputStreamReader dataReader = new InputStreamReader(dataFile.openStream());
       BufferedReader buff = new BufferedReader(dataReader);
     String line = null;
@@ -125,21 +149,18 @@ public class WSO2MLInterpreter extends Interpreter {
     StringWriter out = new StringWriter();
 
     boolean flag = true;
-    List<String> list = getListOfAlgorithms();
+    List<String> list = WSO2MLInterface.getListOfModels();
 
     if(list == null) {
       flag = false;
     }
 
-    root.put("algos", list);
-
-    list = getListOfDataSets();
-
-    if(list == null){
-      flag = false;
+    if(list.size() == 0){
+      root.put("notEmpty", false);
+    }else{
+      root.put("notEmpty", true);
+      root.put("models", list);
     }
-
-    root.put("datasets", list);
 
     if(flag) {
       Configuration cfg = new Configuration(Configuration.VERSION_2_3_22);
@@ -148,7 +169,7 @@ public class WSO2MLInterpreter extends Interpreter {
       cfg.setTemplateExceptionHandler(TemplateExceptionHandler.RETHROW_HANDLER);
 
       try {
-        Template temp = cfg.getTemplate("mlwidget.ftl");
+        Template temp = cfg.getTemplate("mlwidget_predict.ftl");
         temp.process(root, out);
       } catch (IOException e) {
         e.printStackTrace();
@@ -158,14 +179,6 @@ public class WSO2MLInterpreter extends Interpreter {
     }
 
     if(flag){
-//      return new InterpreterResult(InterpreterResult.Code.SUCCESS,
-//              "%html " + debug + out.toString() + "---->" + );
-
-      //this.ctx.getNoteId()
-
-//      return new InterpreterResult(InterpreterResult.Code.SUCCESS,
-//              "%html " + debug + out.toString() + "---->" + this.ctx.getAngularObjectRegistry().get("flower", this.ctx.getNoteId()));
-
       List<InterpreterContextRunner> lst2 = this.ctx.getRunners();
 
       Iterator<InterpreterContextRunner> itr = lst2.iterator();
@@ -177,8 +190,6 @@ public class WSO2MLInterpreter extends Interpreter {
       }
 
       sb.append(this.ctx.getAngularObjectRegistry().getAll(this.ctx.getNoteId()).size());
-      //sb.append(this.getInterpreters());
-
       Iterator<Job> jobs = (Iterator<Job>) this.getScheduler().getJobsWaiting().iterator();
 
       while(jobs.hasNext()) {
@@ -196,24 +207,7 @@ public class WSO2MLInterpreter extends Interpreter {
       InterpreterResult res = interpretInput(new String[]{"println(\"Hello\")"});
 
       return new InterpreterResult(InterpreterResult.Code.SUCCESS,
-              "%html " + debug + out.toString() + "---->" + sb.toString() + res.type().name() + "|" + res.code().name()
-              + "|" + res.message());
-
-//      return new InterpreterResult(InterpreterResult.Code.SUCCESS,
-//              "%html " + debug + out.toString() + "---->" + this.ctx.getNoteId());
-
-//      Iterator<Job> jobs = this.getScheduler().getJobsRunning().iterator();
-//      Job jb = null;
-//
-//      while(jobs.hasNext()){
-//        jb = jobs.next();
-//      }
-//
-//      //Above we assume there is only one job
-//      jb.
-
-//      return new InterpreterResult(InterpreterResult.Code.SUCCESS,
-//              "%html " + debug + out.toString() + "---->");
+              "%html " + out.toString());
     }else{
       return new InterpreterResult(InterpreterResult.Code.ERROR,
               "%html <h4>Error in connecting to the WSO2 ML REST API. Please check whether the REST API is up and is accessible.</h4>");
@@ -283,32 +277,6 @@ public class WSO2MLInterpreter extends Interpreter {
     }
   }
 
-  private String getInterpreters() {
-    InterpreterGroup intpGroup = getInterpreterGroup();
-    StringBuilder sb = new StringBuilder();
-    synchronized (intpGroup) {
-      for (Interpreter intp : getInterpreterGroup()){
-//        if (intp.getClassName().equals(SparkInterpreter.class.getName())) {
-//          Interpreter p = intp;
-//          while (p instanceof WrappedInterpreter) {
-//            if (p instanceof LazyOpenInterpreter) {
-//              lazy = (LazyOpenInterpreter) p;
-//            }
-//            p = ((WrappedInterpreter) p).getInnerInterpreter();
-//          }
-//          spark = (SparkInterpreter) p;
-//        }
-          sb.append(intp.getClassName());
-      }
-    }
-//    if (lazy != null) {
-//      lazy.open();
-//    }
-//    return spark;
-
-    return sb.toString();
-  }
-
   @Override
   public void cancel(InterpreterContext context) {}
 
@@ -325,7 +293,7 @@ public class WSO2MLInterpreter extends Interpreter {
   @Override
   public Scheduler getScheduler() {
     return SchedulerFactory.singleton().createOrGetFIFOScheduler(
-            WSO2MLInterpreter.class.getName() + this.hashCode());
+            WSO2MLInterpreterPrediction.class.getName() + this.hashCode());
   }
 
   public Object getValue(String name) {
@@ -344,28 +312,7 @@ public class WSO2MLInterpreter extends Interpreter {
     return null;
   }
 
-  private List<String> getListOfAlgorithms(){
 
-    ArrayList<String> list = null;
-
-    try {
-      JerseyClient client = new JerseyClient();
-      client.setUsernamePassword("admin", "admin");
-
-      Object response = client.get_JSON("https://" + ML_SERVER_HOST + ":9443/api/configs/algorithms", String.class);
-      String sbAlgos = response.toString();
-      list = new ArrayList<String>();
-
-      MLAlgorithm[] arr = new Gson().fromJson(sbAlgos, MLAlgorithm[].class);
-
-      for (MLAlgorithm algo : arr) {
-        list.add(algo.getName());
-      }
-    }catch(Exception e){
-      logger.error("Error: " + e.getMessage());
-    }
-    return list;
-  }
 
   private List<String> getListOfDataSets(){
     //First, we retrieve all the names of the data sets that are already loaded into the ML server
@@ -449,6 +396,7 @@ public class WSO2MLInterpreter extends Interpreter {
   @Override
   public void open() {
     System.err.println("========+++++ Open called ++-");
+    getMainSparkContext();
     URL[] urls = getClassloaderUrls();
 
     // Very nice discussion about how scala compiler handle classpath
@@ -700,7 +648,10 @@ public class WSO2MLInterpreter extends Interpreter {
 
   public DependencyResolver getDependencyResolver() {
     if (dep == null) {
-      dep = new DependencyResolver(intp, sc, getProperty("zeppelin.dep.localrepo"), null);
+      dep = new DependencyResolver(intp,
+              sc,
+              getProperty("zeppelin.dep.localrepo"),
+              getProperty("zeppelin.dep.additionalRemoteRepository"));
     }
     return dep;
   }
