@@ -15,7 +15,7 @@
 # limitations under the License.
 #
 
-import sys, getopt, traceback
+import sys, getopt, traceback, json, re
 
 from py4j.java_gateway import java_import, JavaGateway, GatewayClient
 from py4j.protocol import Py4JJavaError
@@ -29,20 +29,20 @@ from pyspark.broadcast import Broadcast
 from pyspark.serializers import MarshalSerializer, PickleSerializer
 
 # for back compatibility
-from pyspark.sql import SQLContext, HiveContext, SchemaRDD, Row
+from pyspark.sql import SQLContext, HiveContext, Row
 
 class Logger(object):
   def __init__(self):
     self.out = ""
 
   def write(self, message):
-    self.out = self.out + message
-
-  def get(self):
-    return self.out
+    intp.appendOutput(message)
 
   def reset(self):
     self.out = ""
+
+  def flush(self):
+    pass
 
 
 class PyZeppelinContext(dict):
@@ -52,9 +52,9 @@ class PyZeppelinContext(dict):
   def show(self, obj):
     from pyspark.sql import DataFrame
     if isinstance(obj, DataFrame):
-      print gateway.jvm.org.apache.zeppelin.spark.ZeppelinContext.showDF(self.z, obj._jdf)
+      print(gateway.jvm.org.apache.zeppelin.spark.ZeppelinContext.showDF(self.z, obj._jdf))
     else:
-      print str(obj)
+      print(str(obj))
 
   # By implementing special methods it makes operating on it more Pythonic
   def __setitem__(self, key, item):
@@ -78,9 +78,36 @@ class PyZeppelinContext(dict):
   def get(self, key):
     return self.__getitem__(key)
 
+  def input(self, name, defaultValue = ""):
+    return self.z.input(name, defaultValue)
+
+  def select(self, name, options, defaultValue = ""):
+    # auto_convert to ArrayList doesn't match the method signature on JVM side
+    tuples = list(map(lambda items: self.__tupleToScalaTuple2(items), options))
+    iterables = gateway.jvm.scala.collection.JavaConversions.collectionAsScalaIterable(tuples)
+    return self.z.select(name, defaultValue, iterables)
+
+  def checkbox(self, name, options, defaultChecked = None):
+    if defaultChecked is None:
+      defaultChecked = list(map(lambda items: items[0], options))
+    optionTuples = list(map(lambda items: self.__tupleToScalaTuple2(items), options))
+    optionIterables = gateway.jvm.scala.collection.JavaConversions.collectionAsScalaIterable(optionTuples)
+    defaultCheckedIterables = gateway.jvm.scala.collection.JavaConversions.collectionAsScalaIterable(defaultChecked)
+
+    checkedIterables = self.z.checkbox(name, defaultCheckedIterables, optionIterables)
+    return gateway.jvm.scala.collection.JavaConversions.asJavaCollection(checkedIterables)
+
+  def __tupleToScalaTuple2(self, tuple):
+    if (len(tuple) == 2):
+      return gateway.jvm.scala.Tuple2(tuple[0], tuple[1])
+    else:
+      raise IndexError("options must be a list of tuple of 2")
+
+
 class SparkVersion(object):
   SPARK_1_4_0 = 140
   SPARK_1_3_0 = 130
+  SPARK_2_0_0 = 200
 
   def __init__(self, versionNumber):
     self.version = versionNumber
@@ -91,6 +118,59 @@ class SparkVersion(object):
   def isImportAllPackageUnderSparkSql(self):
     return self.version >= self.SPARK_1_3_0
 
+  def isSpark2(self):
+    return self.version >= self.SPARK_2_0_0
+
+class PySparkCompletion:
+  def __init__(self, interpreterObject):
+    self.interpreterObject = interpreterObject
+
+  def getGlobalCompletion(self):
+    objectDefList = []
+    try:
+      for completionItem in list(globals().keys()):
+        objectDefList.append(completionItem)
+    except:
+      return None
+    else:
+      return objectDefList
+
+  def getMethodCompletion(self, text_value):
+    execResult = locals()
+    if text_value == None:
+      return None
+    completion_target = text_value
+    try:
+      if len(completion_target) <= 0:
+        return None
+      if text_value[-1] == ".":
+        completion_target = text_value[:-1]
+      exec("{} = dir({})".format("objectDefList", completion_target), globals(), execResult)
+    except:
+      return None
+    else:
+      return list(execResult['objectDefList'])
+
+
+  def getCompletion(self, text_value):
+    completionList = set()
+
+    globalCompletionList = self.getGlobalCompletion()
+    if globalCompletionList != None:
+      for completionItem in list(globalCompletionList):
+        completionList.add(completionItem)
+
+    if text_value != None:
+      objectCompletionList = self.getMethodCompletion(text_value)
+      if objectCompletionList != None:
+        for completionItem in list(objectCompletionList):
+          completionList.add(completionItem)
+    if len(completionList) <= 0:
+      self.interpreterObject.setStatementsFinished("", False)
+    else:
+      result = json.dumps(list(filter(lambda x : not re.match("^__.*", x), list(completionList))))
+      self.interpreterObject.setStatementsFinished(result, False)
+
 
 output = Logger()
 sys.stdout = output
@@ -98,6 +178,12 @@ sys.stderr = output
 
 client = GatewayClient(port=int(sys.argv[1]))
 sparkVersion = SparkVersion(int(sys.argv[2]))
+
+if sparkVersion.isSpark2():
+  from pyspark.sql import SparkSession
+else:
+  from pyspark.sql import SchemaRDD
+
 
 if sparkVersion.isAutoConvertEnabled():
   gateway = JavaGateway(client, auto_convert = True)
@@ -133,6 +219,10 @@ sc = SparkContext(jsc=jsc, gateway=gateway, conf=conf)
 sqlc = SQLContext(sc, intp.getSQLContext())
 sqlContext = sqlc
 
+if sparkVersion.isSpark2():
+  spark = SparkSession(sc, intp.getSparkSession())
+
+completion = PySparkCompletion(intp)
 z = PyZeppelinContext(intp.getZeppelinContext())
 
 while True :
@@ -161,7 +251,7 @@ while True :
       sc.setJobGroup(jobGroup, "Zeppelin")
       eval(compiledCode)
 
-    intp.setStatementsFinished(output.get(), False)
+    intp.setStatementsFinished("", False)
   except Py4JJavaError:
     excInnerError = traceback.format_exc() # format_tb() does not return the inner exception
     innerErrorStart = excInnerError.find("Py4JJavaError:")

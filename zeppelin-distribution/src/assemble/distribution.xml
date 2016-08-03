@@ -55,6 +55,8 @@
       <includes>
         <include>README.md</include>
         <include>LICENSE*</include>
+        <include>NOTICE</include>
+        <include>DISCLAIMER</include>
       </includes>
     </fileSet>
     <fileSet>
@@ -63,7 +65,16 @@
       <fileMode>0755</fileMode>
     </fileSet>
     <fileSet>
+      <directory>../licenses</directory>
+    </fileSet>
+    <fileSet>
       <directory>../conf</directory>
+      <excludes>
+        <exclude>interpreter.json</exclude>
+        <exclude>zeppelin-env.cmd</exclude>
+        <exclude>zeppelin-env.sh</exclude>
+        <exclude>zeppelin-site.xml</exclude>
+      </excludes>
     </fileSet>
     <fileSet>
       <directory>../interpreter</directory>
